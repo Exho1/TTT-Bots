@@ -4,6 +4,7 @@ Semi-intelligent, functional AI players for Trouble in Terrorist Town in Garry's
 ## Dependencies:
 This requires the serverside gm_navigation module in order to properly function. It can be found on the Facepunch thread or downloaded directly from googlecode (I included the archive for when google code goes down)
 
+#### gm_navigation
 Facepunch - http://facepunch.com/showthread.php?t=953805
 
 Direct - http://spacetechmodules.googlecode.com/svn/trunk/gm_navigation/Release%20-%20Server/gmsv_navigation_win32.dll
