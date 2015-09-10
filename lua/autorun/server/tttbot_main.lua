@@ -1,19 +1,8 @@
 ----// TTT Bots //----
 -- Author: Exho
--- Version: 9/7/15
+-- Version: 9/10/15
 
 require("navigation")
-
---[[
-	TODO:
-		- replace generatenavmesh with tttBot.generateNAv
-			Move the contents of the first function into the second and test it
-		- Remove all the old or unused code
-		- Uncomment code and change values back to normal to make everything functional
-		- There can only be 1 nav per path
-			- 1 nav per bot should suffice
-
-]]
 
 tttBot = tttBot or {}
 tttBot.speed = 220
@@ -32,6 +21,7 @@ tttBot.playerToBotCount = {
 }
 
 tttBot.shouldSpawnBots = true
+tttBot.slayBotTraitors = true
 
 --// TTTPrepareRound hook to balance the amount of bots in the game
 hook.Add("TTTPrepareRound", "tttBots", function()
@@ -43,6 +33,7 @@ hook.Add("TTTPrepareRound", "tttBots", function()
 		local curPlayers = #player.GetHumans()
 		local curBots = #player.GetBots()
 		local botsToHave = tttBot.playerToBotCount[curPlayers] or 0
+		local botsToHave = 1
 		
 		if curBots < botsToHave then
 			-- Create bots
@@ -75,8 +66,6 @@ hook.Add("TTTPrepareRound", "tttBots", function()
 			ply.tttBot_endGunSearchTime = -1
 		end
 	end
-	
-	findExho():Give("weapon_ttt_grapplehook")
 end)
 
 --// TTTBeginRound hook to reset the bots, again
@@ -88,6 +77,12 @@ hook.Add("TTTBeginRound", "tttBots", function()
 			ply:setNewPos( nil )
 			ply.tttBot_endGunSearchTime = -1
 		end
+	end
+end)
+
+hook.Add("TTTKarmaLow", "tttBots", function( ply )
+	if ply:IsBot() then
+		return false
 	end
 end)
 
@@ -107,7 +102,7 @@ hook.Add("Think", "tttBotsWin", function()
 			end
 		end
 
-		if aliveHumans == 0 and aliveBots > 0 and not true then 
+		if aliveHumans == 0 and aliveBots > 0 and tttBot.slayBotTraitors then 
 			PrintMessage( HUD_PRINTTALK, "The last Traitor(s) are bots and have been slain")
 			
 			for _, v in pairs( GetTraitors() ) do
@@ -135,6 +130,67 @@ hook.Add("Think", "tttBotsWin", function()
 	end
 end)
 
+local spawns = {
+	"info_player_deathmatch", "info_player_combine",
+	"info_player_rebel", "info_player_counterterrorist", "info_player_terrorist",
+	"info_player_axis", "info_player_allies", "gmod_player_start",
+	"info_player_teamspawn", "info_player_start"
+}
+
+--// Think hook that keeps a global table of "landmarks" which are positions that the bots can wander to
+local nextLandmarkUpdate = 0
+hook.Add("Think", "tttBotsLandmarks", function()
+	if not tttBot.landmarks then
+		tttBot.landmarks = {}
+	end
+	
+	if CurTime() > nextLandmarkUpdate then
+		local landmarks = {}
+		
+		-- Add spawnpoints and weapons
+		for _, ent in pairs( ents.GetAll() ) do
+			for _, class in pairs( spawns ) do
+				if ent:GetClass():lower() == class:lower() then
+					table.insert( landmarks, ent )
+				end
+			end
+		end
+		
+		-- Add living players
+		for _, v in pairs( player.GetAll() ) do
+			if v:Alive() then
+				table.insert( landmarks, v )
+			end
+		end
+		
+		tttBot.landmarks = landmarks
+		
+		nextLandmarkUpdate = CurTime() + 10
+	end
+end)
+
+--// Think hook to locate all the weapons that are on the ground
+local nextWeaponUpdate = 0
+hook.Add("Think", "tttBotsWeapons", function()
+	if not tttBot.weapons then
+		tttBot.weapons = {}
+	end
+	
+	if CurTime() > nextWeaponUpdate then
+		local weps = {}
+		
+		for _, ent in pairs( ents.GetAll() ) do
+			if ent:IsWeapon() and not IsValid( ent:GetOwner() ) and tttBot.weaponIsValid( ent ) then
+				table.insert( weps, ent )
+			end
+		end
+		
+		tttBot.weapons = weps
+		
+		nextWeaponUpdate = CurTime() + 5
+	end
+end)
+
 --// StartCommand hook that serves as the backbone to run the bots
 hook.Add("StartCommand", "tttBots", function( ply, cmd )
 	if ply:IsBot() and IsValid( ply ) then
@@ -143,26 +199,6 @@ hook.Add("StartCommand", "tttBots", function( ply, cmd )
 		if ply:Alive() then
 			ply:lerpAngles()
 			
-			--[[
-			ply:setTarget( findExho() )
-			
-			ply:setNewAngles( Angle( 0, 270, 0 ) )
-			
-			local clearLOS = ply:clearLOS( ply:getTarget() )
-			local vectorVisible = ply:isVectorVisible( ply:getTarget():GetPos() )
-			
-			findExho():ChatPrint(tostring(clearLOS).." "..tostring(vectorVisible))
-			
-			ply:idle()
-			]]
-			
-			--[[
-			ply:followPath()
-			if not ply.currentPath and not ply:getPathing() then
-				ply:idle()
-			end
-			]]
-			
 			if GetRoundState() == ROUND_ACTIVE then
 				ply:followPath()
 				
@@ -170,11 +206,11 @@ hook.Add("StartCommand", "tttBots", function( ply, cmd )
 				if ply:GetRole() == ROLE_INNOCENT then
 					if IsValid( ply:getTarget() ) then
 						ply:huntTarget()
-					elseif not ply:hasGuns() then
-						ply:findWeapon() 
-						ply:wander() -- WARNING: Resource intensive
-						ply:selectCrowbar()
 					else
+						if not ply:hasGuns() then
+							ply:findWeapon() 
+							ply:selectCrowbar()
+						end
 						ply:wander() -- WARNING: Resource intensive
 					end
 				end
@@ -233,16 +269,17 @@ hook.Add("StartCommand", "tttBots", function( ply, cmd )
 						ply:huntTarget()
 					else
 						-- Search for weapons
-						if not ply:hasGuns() then
-							ply:findWeapon()
-						end
+						ply:findWeapon()
+						ply:wander()
 					end
 				end
 			else
+				-- The round hasn't started
 				ply:setTarget( nil )
 				ply:idle()
 			end
 		else
+			-- Don't do anything we're dead
 			ply:idle()
 		end
 	end

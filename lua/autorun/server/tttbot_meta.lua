@@ -15,6 +15,11 @@ end
 
 local plymeta = FindMetaTable( "Player" )
 
+function plymeta:debug( text )
+	print(self:Nick()..":", text)
+end
+
+--// Generates a new navmesh for the bot to use for pathfinding
 function plymeta:generateNav( callback )
 
 	local navmesh = nav.Create( 64 )
@@ -23,53 +28,57 @@ function plymeta:generateNav( callback )
 	navmesh:SetDiagonal( true )
 	navmesh:SetMask( MASK_PLAYERSOLID )
 	
-	local HitWorld = true
-	local Pos = Vector( 150.98213195801, -317.26312255859, 64.03125 )
+	local landmark = table.Random( tttBot.landmarks )
+	local Pos
+	if IsValid( landmark ) then
+		Pos = table.Random( tttBot.landmarks ):GetPos()
+	else
+		Pos = table.Random( player.GetAll() ):GetPos()
+	end
+
 	local Normal = Vector( 0, 0, 0 )
 	local NormalUp = Vector(0, 0, 1)
 
-	if(HitWorld) then
-		ErrorNoHalt("Creating navmesh\n")
-		
-		if IsValid( self ) then
-			-- Remove this line if you don't want a max distance
-			navmesh:SetupMaxDistance(self:GetPos(), 1024) -- All nodes must stay within 256 vector distance from the players position
-		end
-		
-		navmesh:ClearGroundSeeds()
-		navmesh:ClearAirSeeds()
-		
-		-- Once 1 seed runs out, it will go onto the next seed
-		navmesh:AddGroundSeed(Pos, Normal)
-		
-		-- The module will account for node overlapping
-		navmesh:AddGroundSeed(Pos, NormalUp)
-		navmesh:AddGroundSeed(Pos, NormalUp)
-		
-		local StartTime = os.time()
-		
-		navmesh:Generate( function(navmesh)
-			ErrorNoHalt("Generated "..navmesh:GetNodeTotal().." nodes in "..string.ToMinutesSeconds(os.time() - StartTime).."\n")
-			
-			if callback then
-				callback()
-			end
-		end, 
-		function( navmesh, GeneratedNodes )
-			ErrorNoHalt("Generated "..GeneratedNodes.." nodes so far\n")
-		end)
+	self:debug("Creating navmesh")
+	
+	if IsValid( self ) then
+		-- Remove this line if you don't want a max distance
+		navmesh:SetupMaxDistance(self:GetPos(), 1024) -- All nodes must stay within 256 vector distance from the players position
 	end
+	
+	navmesh:ClearGroundSeeds()
+	navmesh:ClearAirSeeds()
+	
+	-- Once 1 seed runs out, it will go onto the next seed
+	navmesh:AddGroundSeed(Pos, Normal)
+	
+	-- The module will account for node overlapping
+	navmesh:AddGroundSeed(Pos, NormalUp)
+	navmesh:AddGroundSeed(Pos, NormalUp)
+	
+	local StartTime = os.time()
+	
+	navmesh:Generate( function(navmesh)
+		self:debug("Generated "..navmesh:GetNodeTotal().." nodes in "..string.ToMinutesSeconds(os.time() - StartTime).."")
+		
+		if callback then
+			callback()
+		end
+	end, 
+	function( navmesh, GeneratedNodes )
+		self:debug("Generated "..GeneratedNodes.." nodes so far")
+	end)
 end
 
 --// Generates a path from the bot's position to the given vector
 function plymeta:generatePathTo( pos )
 	local navmesh = self.tttBot_nav
 	
-	print("generatePathTo", pos)
+	self:debug("generatePathTo", pos)
 	
 	-- This bot doesn't have a nav, generate one so it has purpose in life
 	if not navmesh then
-		print(self:Nick().." does not have a valid nav mesh! Generating one...")
+		self:debug(self:Nick().." does not have a valid nav mesh! Generating one...")
 		self:setPathing( false )
 		self:generateNav( function()
 			self:generatePathTo( pos )
@@ -79,7 +88,7 @@ function plymeta:generatePathTo( pos )
 	
 	-- Nav is still generating, don't do anything stupid
 	if not navmesh:IsGenerated() then
-		print("Nav is still generating")
+		self:debug("Nav is still generating")
 		self:setPathing( false )
 		return
 	end
@@ -90,9 +99,10 @@ function plymeta:generatePathTo( pos )
 	if self.failedPathTries > 5 then
 		if pos == self.failedPathPos then
 			-- Generate a new nav because that sometimes fixes it
-			print("Failed to generate path too many times")
+			self:debug("~~ Failed to generate path too many times")
 			self:setPathing( false )
-			self:generateNav()
+			self:setNewPos( nil )
+			self:generateNav() -- TEMP: Figure out the cost of calculating this multiple times
 			return
 		else
 			self.failedPathTries = 0
@@ -104,7 +114,6 @@ function plymeta:generatePathTo( pos )
 	local maxs = Vector(16, 16, 72)
 
 	local startNode = navmesh:GetClosestNode( self:GetPos() )
-	--local endNode = navmesh:GetClosestNode( findExho():GetPos() )
 	local endNode = navmesh:GetClosestNode( pos )
 	
 	-- For some reason this module likes to return invalid nodes as false instead of nil
@@ -113,13 +122,13 @@ function plymeta:generatePathTo( pos )
 		navmesh:SetEnd( endNode )
 	end
 	
-	ErrorNoHalt("ComputePath\n")
+	self:debug("ComputePath")
 	
 	local startTime = os.time()
 	
 	navmesh:FindPathHull(mins, maxs, function(navmesh, bFoundPath, path)
 		if bFoundPath then
-			ErrorNoHalt("Found Path in "..string.ToMinutesSeconds(os.time() - startTime).." Path Size: "..table.Count(path).."\n")
+			self:debug("Found Path in "..string.ToMinutesSeconds(os.time() - startTime).." Path Size: "..table.Count(path).."")
 			
 			self.currentPath = path
 			self.currentPathKey = 2 -- Ignore the nodes that we are standing on
@@ -129,10 +138,8 @@ function plymeta:generatePathTo( pos )
 			self.generatingPath = false
 			
 			self:setPathing( true )
-			
-			--showPath( path )
 		else
-			ErrorNoHalt("Failed to Find Path\n")
+			self:debug("Failed to Find Path")
 			self.generatingPath = false
 			
 			self:setPathing( false )
@@ -157,6 +164,16 @@ function plymeta:getPathing()
 	return self.tttBot_followingPath
 end
 
+--// Stops the bot from following their calculated path
+function plymeta:abandonPath()
+	self.currentPath = nil
+	self.currentPathKey = nil
+	self.currentPathStart = nil
+	self.currentPathEnd = nil
+	
+	self:setPathing( false )
+end
+
 --// Called every tick to make the bot follow its previously generated path
 function plymeta:followPath()
 	local cmd = self.cmd
@@ -172,20 +189,15 @@ function plymeta:followPath()
 		
 		-- The next node isn't valid
 		if not nextNode then 
-			print("Next node is invalid")
+			self:debug("Next node is invalid")
 			self.currentPathKey = pathKey + 1
 			pathKey = pathKey + 1
 			nextNode = path[pathKey+1]
 			
 			-- The next node doesn't exist, we've reached the end of the path
 			if not nextNode then
-				print("There are no more nodes", #path, pathKey)
-				self.currentPath = nil
-				self.currentPathKey = nil
-				self.currentPathStart = nil
-				self.currentPathEnd = nil
-				
-				self:setPathing( false )
+				self:debug("There are no more nodes", #path, pathKey)
+				self:abandonPath()
 			end
 			return
 		end
@@ -196,13 +208,27 @@ function plymeta:followPath()
 		cmd:SetForwardMove( tttBot.speed )
 		self:lookAtPos( nextVector )
 		
-		print(self:GetPos():Distance( nextVector ))
+		-- Maximum height to walk over an obstacle is 20 units
+		local pos = self:GetPos()
+		if nextVector.z > pos.z and nextVector.z - pos.z > 18 then
+			cmd:SetButtons( IN_JUMP )
+		end
+		
+		--self:debug(self:GetPos():Distance( nextVector ))
 		
 		-- We are close enough to the vector to be done
 		if self:GetPos():Distance( nextVector ) < 50 then
-			print("Increment key")
+			self:debug("Increment key")
+			self.lastNodePass = CurTime()
 			self.currentPathKey = pathKey + 1
+		else
+			self.lastNodePass = self.lastNodePass or 0
+			if CurTime() - self.lastNodePass > 10 then
+				self:abandonPath()
+			end
 		end
+	else
+		self.lastNodePass = 0
 	end
 end
 
@@ -210,7 +236,7 @@ end
 -- TODO This should probably hooked onto Initialize so it overrides TTT's function
 hook.Add("Initialize", "tttBots_avoidDetective", function()
 	function plymeta:GetAvoidDetective()
-		if self.IsBot and self:IsBot() then print("Bot's shouldn't be detective") return true end
+		if self.IsBot and self:IsBot() then self:debug("Bot's shouldn't be detective") return true end
 		
 		return self:GetInfoNum("ttt_avoid_detective", 0) > 0
 	end
@@ -333,24 +359,23 @@ function plymeta:huntTarget()
 		local clearLOS = self:clearLOS( self:getTarget() )
 		local vectorVisible = true
 		
-		--print(vectorVisible, clearLOS)
-		
 		-- The target is within our cone of vision and we can see them
 		if vectorVisible and clearLOS then
-			--self:setNewAngles( Angle( pitch, yaw, 0 ) )
-			
 			-- Track their position
 			self.targetPos = tPos
 			
-			-- Is this really necessary?
+			-- Make sure the target vector is on the ground
 			if CurTime() > nextPosTrace then
 				local tracedata = {}
 				tracedata.start = tPos
 				tracedata.filter = {self}
-				tracedata.endpos = tPos + ang:Forward() * 1000
+				tracedata.endpos = tPos + Vector(0, 1000, 0) -- Trace straight down
 				local trace = util.TraceLine(tracedata)
 				
-				self:setNewPos( trace.HitPos )
+				--self:setNewPos( trace.HitPos )
+				if trace.HitWorld then
+					self.targetPos = trace.HitPos
+				end
 				
 				nextPosTrace = CurTime() + 2
 			end
@@ -409,23 +434,16 @@ function plymeta:huntTarget()
 	else
 		-- Our target isn't valid
 		if self:GetRole() == ROLE_TRAITOR then
-			print("New target - Hunt")
+			self:debug("New target - Hunt")
 			-- Traitors should find new targets
 			self:setTarget( self:findNewTarget( ) )
 		else
 			-- Innocents should go wander some more
-			print("Delete target - Hunt")
+			self:debug("Delete target - Hunt")
 			self:setTarget( nil )
 		end
 	end
 end
-
-local spawns = {
-	"info_player_deathmatch", "info_player_combine",
-	"info_player_rebel", "info_player_counterterrorist", "info_player_terrorist",
-	"info_player_axis", "info_player_allies", "gmod_player_start",
-	"info_player_teamspawn", "info_player_start"
-}
 
 --// Makes the bot walk between random positions and search for guns every so often
 function plymeta:wander()
@@ -434,24 +452,46 @@ function plymeta:wander()
 	local newPos = self:getNewPos()
 	
 	if newPos and self:GetPos():Distance( newPos ) > 50 then
-		-- Walk towards the given position
-		--self:lookAtPos( newPos )
-		--cmd:SetForwardMove( tttBot.speed )
-		
 		self.tttBot_nextPathGen = self.tttBot_nextPathGen or 0
+		
+		
+		self.nextDoorTrace = self.nextDoorTrace or 0
+		if CurTime() > self.nextDoorTrace then
+			local tr = self:GetEyeTrace()
+			
+			if IsValid( tr.Entity ) and not tr.HitWorld then
+				local ent = tr.Entity
+				
+				if ent:isDoor() then
+					ent:Fire("open")
+				end
+			else
+				-- Is our face in a wall?
+				if self:GetPos():Distance( tr.HitPos ) < 10 then
+					-- Walk to a random landmark around the map
+					local spawn = table.Random( tttBot.landmarks )
+					
+					if IsValid( spawn ) then
+						self:setNewPos( spawn:GetPos() + Vector( 0, 0, 30 ) )
+					end
+				end
+			end	
+			
+			self.nextDoorTrace = CurTime() + 3
+		end
 		
 		if CurTime() > self.tttBot_nextPathGen then
 			self:generatePathTo( newPos )
-			self.tttBot_nextPathGen = CurTime() + 2
+			self.tttBot_nextPathGen = CurTime() + 5
 		end
 		
 		if not self:getPathing() then
 			cmd:SetForwardMove( tttBot.speed )
 			self:lookAtPos( newPos )
 		end
-		
-		--self:generatePathTo( newPos )
 	else
+		self:setNewPos( nil )
+		
 		-- Find a new position for the bot to walk to
 		self.tttBot_nextWeaponSearch = self.tttBot_nextWeaponSearch or 0
 		
@@ -463,28 +503,12 @@ function plymeta:wander()
 				self.tttBot_nextWeaponSearch = CurTime() + 5
 			end
 		else
-			local spawnpoints = {}
+			-- Walk to a random landmark around the map
+			local spawn = table.Random( tttBot.landmarks )
 			
-			-- Add spawnpoints
-			for _, ent in pairs( ents.GetAll() ) do
-				for _, class in pairs( spawns ) do
-					if ent:GetClass():lower() == class:lower() then
-						table.insert( spawnpoints, ent )
-					end
-				end
+			if IsValid( spawn ) then
+				self:setNewPos( spawn:GetPos() + Vector( 0, 0, 30 ) )
 			end
-			
-			-- Add living players
-			for _, v in pairs( player.GetAll() ) do
-				if v:Alive() then
-					table.insert( spawnpoints, v )
-				end
-			end
-			
-			-- Walk to a random entity in this table
-			local spawn = table.Random( spawnpoints )
-			
-			self:setNewPos( spawn:GetPos() + Vector( 0, 0, 30 ) )
 		end
 	end
 end
@@ -545,35 +569,30 @@ end
 --// Searches the world to try to find weapons to pick up
 function plymeta:findWeapon()
 	local cmd = self.cmd
-	local weps = {}
 	
-	-- Locate all weapons that are lying on the ground
-	for _, ent in pairs( ents.GetAll() ) do
-		if ent:IsWeapon() and not IsValid( ent:GetOwner() ) then
-			table.insert( weps, ent )
-		end
+	-- We are already pathing towards a weapon
+	if self:getNewPos() then
+		return
 	end
 	
 	local closestDist = 100000
 	local closestKey = 0
-	for k, wep in pairs( weps ) do
-		if tttBot.weaponIsValid( wep ) then
-			local dist = self:GetPos():Distance( wep:GetPos() )
-			
-			if dist < closestDist then
-				--if self:GetEyeTrace().Entity == wep then
-					closestDist = dist
-					closestKey = k
-				--end
-			end
+	for k, wep in pairs( tttBot.weapons ) do
+		local dist = self:GetPos():Distance( wep:GetPos() )
+		
+		if dist < closestDist then
+			--if self:GetEyeTrace().Entity == wep then
+				closestDist = dist
+				closestKey = k
+			--end
 		end
 	end
 	
-	if IsValid( weps[closestKey] ) then
-		self:setNewPos( weps[closestKey]:GetPos() )
+	if IsValid( tttBot.weapons[closestKey] ) then
+		self:setNewPos( tttBot.weapons[closestKey]:GetPos() )
 	end
 	
-	return weps[closestKey]
+	return tttBot.weapons[closestKey]
 end
 
 --// Makes the bot attack
@@ -592,13 +611,6 @@ function plymeta:selectCrowbar()
 	if IsValid( crowbar ) then
 		cmd:SelectWeapon( crowbar )
 	end
-	
-	--[[
-	for _, v in pairs( self:GetWeapons() ) do
-		if v:GetClass() == "weapon_zm_improvised" then
-			cmd:SelectWeapon( v )
-		end
-	end]]
 end
 
 --// Tells the bot to select the first weapon it has or the weapon that matches the class
