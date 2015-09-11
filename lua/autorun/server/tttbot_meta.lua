@@ -15,29 +15,34 @@ end
 
 local plymeta = FindMetaTable( "Player" )
 
+--// Prints debugging stuff to console with the bot's name preceeding it to make it easier to see which bot is doing what
 function plymeta:debug( text )
+	if not tttBot.developerMode then return end
+	
 	print(self:Nick()..":", text)
 end
 
 --// Generates a new navmesh for the bot to use for pathfinding
 function plymeta:generateNav( callback )
-
+	
 	local navmesh = nav.Create( 64 )
 	self.tttBot_nav = navmesh -- Global variable to access the navmesh
-
+	
 	navmesh:SetDiagonal( true )
 	navmesh:SetMask( MASK_PLAYERSOLID )
+	--navmesh:SetHeuristic(nav.HEURISTIC_EUCLIDEAN)
 	
+	-- Find a random position to add as a seed
 	local landmark = table.Random( tttBot.landmarks )
-	local Pos
+	local pos
 	if IsValid( landmark ) then
-		Pos = table.Random( tttBot.landmarks ):GetPos()
+		pos = table.Random( tttBot.landmarks ):GetPos()
 	else
-		Pos = table.Random( player.GetAll() ):GetPos()
+		pos = table.Random( player.GetAll() ):GetPos()
 	end
 
-	local Normal = Vector( 0, 0, 0 )
-	local NormalUp = Vector(0, 0, 1)
+	local normal = Vector( 0, 0, 0 )
+	local normalUp = Vector(0, 0, 1)
 
 	self:debug("Creating navmesh")
 	
@@ -50,14 +55,15 @@ function plymeta:generateNav( callback )
 	navmesh:ClearAirSeeds()
 	
 	-- Once 1 seed runs out, it will go onto the next seed
-	navmesh:AddGroundSeed(Pos, Normal)
+	navmesh:AddGroundSeed(pos, normal)
 	
 	-- The module will account for node overlapping
-	navmesh:AddGroundSeed(Pos, NormalUp)
-	navmesh:AddGroundSeed(Pos, NormalUp)
+	navmesh:AddGroundSeed(pos, normalUp)
+	navmesh:AddGroundSeed(pos, normalUp)
 	
 	local StartTime = os.time()
 	
+	-- Generate the nav
 	navmesh:Generate( function(navmesh)
 		self:debug("Generated "..navmesh:GetNodeTotal().." nodes in "..string.ToMinutesSeconds(os.time() - StartTime).."")
 		
@@ -120,26 +126,30 @@ function plymeta:generatePathTo( pos )
 	if type(startNode) != "boolean" and type(endNode) != "boolean" then
 		navmesh:SetStart( startNode )
 		navmesh:SetEnd( endNode )
+	else
+		self:debug("Given nodes are booleans, wtf")
+		return
 	end
 	
-	self:debug("ComputePath")
+	self:debug("Attempting to find new path")
 	
 	local startTime = os.time()
 	
 	navmesh:FindPathHull(mins, maxs, function(navmesh, bFoundPath, path)
 		if bFoundPath then
-			self:debug("Found Path in "..string.ToMinutesSeconds(os.time() - startTime).." Path Size: "..table.Count(path).."")
+			self:debug("Found path in "..string.ToMinutesSeconds(os.time() - startTime).." Path Size: "..table.Count(path).."")
 			
 			self.currentPath = path
 			self.currentPathKey = 2 -- Ignore the nodes that we are standing on
 			self.currentPathStart = navmesh:GetStart()
 			self.currentPathEnd = navmesh:GetEnd()
+			self.currentPathAge = CurTime()
 			
 			self.generatingPath = false
 			
 			self:setPathing( true )
 		else
-			self:debug("Failed to Find Path")
+			self:debug("Failed to find path")
 			self.generatingPath = false
 			
 			self:setPathing( false )
@@ -170,6 +180,8 @@ function plymeta:abandonPath()
 	self.currentPathKey = nil
 	self.currentPathStart = nil
 	self.currentPathEnd = nil
+	self.currentPathAge = nil
+	self.lastNodePass = nil
 	
 	self:setPathing( false )
 end
@@ -214,17 +226,19 @@ function plymeta:followPath()
 			cmd:SetButtons( IN_JUMP )
 		end
 		
-		--self:debug(self:GetPos():Distance( nextVector ))
-		
 		-- We are close enough to the vector to be done
 		if self:GetPos():Distance( nextVector ) < 50 then
 			self:debug("Increment key")
 			self.lastNodePass = CurTime()
 			self.currentPathKey = pathKey + 1
 		else
-			self.lastNodePass = self.lastNodePass or 0
+			self.lastNodePass = self.lastNodePass or CurTime()
 			if CurTime() - self.lastNodePass > 10 then
+				self:debug("Abandoning path")
 				self:abandonPath()
+				
+				-- Walk around for a bit
+				self.tttBot_endGunSearchTime = CurTime() + math.random(10, 15)
 			end
 		end
 	else
@@ -232,19 +246,12 @@ function plymeta:followPath()
 	end
 end
 
---// Makes sure the bots don't get selected for Detective 
--- TODO This should probably hooked onto Initialize so it overrides TTT's function
-hook.Add("Initialize", "tttBots_avoidDetective", function()
-	function plymeta:GetAvoidDetective()
-		if self.IsBot and self:IsBot() then self:debug("Bot's shouldn't be detective") return true end
-		
-		return self:GetInfoNum("ttt_avoid_detective", 0) > 0
-	end
-end)
-
 --// Sets the target for the bot
 function plymeta:setTarget( target )
 	self.tttBot_target = target
+	
+	--self.tttBot_kos = self.tttBot_kos or {}
+	--table.insert( self.tttBot_kos, target )
 end
 
 --// Returns the target for the bot
@@ -271,6 +278,16 @@ end
 --// Returns the new eye angles for the bot to interpolate to
 function plymeta:getNewAngles()
 	return self.tttBot_newAng, self.tttBot_oldAng
+end
+
+--// Sets if the bot should run any calculations
+function plymeta:setActive( bActive )
+	self.tttBot_active = bActive
+end
+
+--// Returns if the bot should run any calculations
+function plymeta:getActive()
+	return self.tttBot_active
 end
 
 --// Makes the bot stand still 
@@ -301,10 +318,10 @@ function plymeta:findNewTarget( bLazy )
 			end
 		end
 	end
-	
+
 	-- Can't immediately find a target, go try to find a gun
 	if not IsValid( target ) then
-		self.tttBot_endGunSearchTime = CurTime() + math.random(5, 15)
+		self.tttBot_endGunSearchTime = CurTime() + math.random(10, 15)
 	end
 
 	return target
@@ -318,7 +335,7 @@ function plymeta:lerpAngles()
 	local newAng = self.tttBot_newAng
 	
 	if newAng then
-		cmd:SetViewAngles( LerpAngle( 0.7, eyeAng, newAng ) )
+		cmd:SetViewAngles( LerpAngle( 0.6, eyeAng, newAng ) )
 	end
 end
 
@@ -386,7 +403,9 @@ function plymeta:huntTarget()
 			if not clearLOS and self.targetPos:Distance( self:GetPos() ) < 25 then
 				-- We can't see the target and we reached their last known position
 				-- They are gone
+				self:debug("Delete Target - Lost LOS")
 				self:setTarget( nil )
+				self.tttBot_endGunSearchTime = CurTime() + math.random(10, 15)
 			else
 				self.tttBot_nextPathGen = self.tttBot_nextPathGen or 0
 				
@@ -413,23 +432,27 @@ function plymeta:huntTarget()
 		
 		local activeClass = self:GetActiveWeapon():GetClass()
 		
-		-- We have weapons
-		if self:hasGuns() then
-			self:selectGun()
-			if clearLOS then
-				-- Shoot at them
-				self:attackTarget()
-				
-				-- Fake some revoil
-				local ang = Angle(pitch, yaw, 0)
-				cmd:SetViewAngles( Angle(ang.p + math.random(5, 10), ang.y + math.random(-5,5), ang.r) )
-			else
-				cmd:ClearButtons()
-			end
-		elseif dist < 70 and clearLOS then
+		--// Weapons and attacking
+		
+		if dist < 70 and clearLOS then
 			-- Whack the target
 			self:selectCrowbar()
 			self:attackTarget()
+		else
+			-- We have weapons
+			if self:hasGuns() then
+				self:selectGun()
+				if clearLOS then
+					-- Shoot at them
+					self:attackTarget()
+					
+					-- Fake some revoil
+					local ang = Angle(pitch, yaw, 0)
+					cmd:SetViewAngles( Angle(ang.p + math.random(5, 10), ang.y + math.random(-5,5), ang.r) )
+				else
+					cmd:ClearButtons()
+				end
+			end
 		end
 	else
 		-- Our target isn't valid
@@ -454,7 +477,7 @@ function plymeta:wander()
 	if newPos and self:GetPos():Distance( newPos ) > 50 then
 		self.tttBot_nextPathGen = self.tttBot_nextPathGen or 0
 		
-		
+		-- Check for doors and other obstacles
 		self.nextDoorTrace = self.nextDoorTrace or 0
 		if CurTime() > self.nextDoorTrace then
 			local tr = self:GetEyeTrace()
@@ -468,23 +491,20 @@ function plymeta:wander()
 			else
 				-- Is our face in a wall?
 				if self:GetPos():Distance( tr.HitPos ) < 10 then
-					-- Walk to a random landmark around the map
-					local spawn = table.Random( tttBot.landmarks )
-					
-					if IsValid( spawn ) then
-						self:setNewPos( spawn:GetPos() + Vector( 0, 0, 30 ) )
-					end
+					self:setNewPos( self:GetPos() + (self:GetForward() * -50) )
 				end
 			end	
 			
 			self.nextDoorTrace = CurTime() + 3
 		end
 		
+		-- Generate a new path every so often in case our target moves
 		if CurTime() > self.tttBot_nextPathGen then
 			self:generatePathTo( newPos )
-			self.tttBot_nextPathGen = CurTime() + 5
+			self.tttBot_nextPathGen = CurTime() + math.random(5,10)
 		end
 		
+		-- Fall back to the basic movement system I used before
 		if not self:getPathing() then
 			cmd:SetForwardMove( tttBot.speed )
 			self:lookAtPos( newPos )

@@ -1,6 +1,6 @@
 ----// TTT Bots //----
 -- Author: Exho
--- Version: 9/10/15
+-- Version: 9/11/15
 
 require("navigation")
 
@@ -20,20 +20,25 @@ tttBot.playerToBotCount = {
 	[9] = 1,
 }
 
+-- Should bots be spawned? 
 tttBot.shouldSpawnBots = true
+
+-- Should Traitor bots be slain if there are no more Traitor humans alive? 
 tttBot.slayBotTraitors = true
+
+tttBot.developerMode = false
 
 --// TTTPrepareRound hook to balance the amount of bots in the game
 hook.Add("TTTPrepareRound", "tttBots", function()
 	local roundsLeft = math.max(0, GetGlobalInt("ttt_rounds_left", 6))
 	local maxRounds = GetConVar("ttt_round_limit"):GetInt()
 	
+	-- Only spawn bots if the server wants them and it isn't the first round of the map (so players don't lose their slots)
 	if tttBot.shouldSpawnBots and roundsLeft < maxRounds then 
 		local maxPlayers = game.MaxPlayers()
 		local curPlayers = #player.GetHumans()
 		local curBots = #player.GetBots()
 		local botsToHave = tttBot.playerToBotCount[curPlayers] or 0
-		local botsToHave = 1
 		
 		if curBots < botsToHave then
 			-- Create bots
@@ -55,31 +60,176 @@ hook.Add("TTTPrepareRound", "tttBots", function()
 				v:Kick("Not wanted here")
 			end
 		end
-	end	
-	
+	end
 
 	-- Reset all the living bots
-	for _, ply in pairs( player.GetAll() ) do
-		if ply:IsBot() then
-			ply:setTarget( nil )
-			ply:setNewPos( nil )
-			ply.tttBot_endGunSearchTime = -1
-		end
+	for _, ply in pairs( player.GetBots() ) do
+		ply:setTarget( nil )
+		ply:setNewPos( nil )
+		ply.tttBot_endGunSearchTime = -1
+		
+		ply:setActive( false )
 	end
 end)
 
---// TTTBeginRound hook to reset the bots, again
+--// TTTBeginRound hook to reset the bots and activate them
 hook.Add("TTTBeginRound", "tttBots", function()
-	-- Reset all the living bots
-	for _, ply in pairs( player.GetAll() ) do
-		if ply:IsBot() then
-			ply:setTarget( nil )
-			ply:setNewPos( nil )
-			ply.tttBot_endGunSearchTime = -1
+	local botCount = #player.GetBots()
+	local spawningTime = 5
+	
+	local botsPerWave = math.ceil(botCount/spawningTime)
+	local botsInWave = 0
+	local delay = 1
+	
+	for _, ply in pairs( player.GetBots() ) do
+		-- Reset bot values to if the bot was freshly spawned
+		ply:setTarget( nil )
+		ply:setNewPos( nil )
+		ply.tttBot_endGunSearchTime = -1
+		
+		botsInWave = botsInWave + 1
+		if botsInWave > botsPerWave then
+			delay = delay + 1
+			botsInWave = 0
+		end
+		
+		-- Stagger the activation of bots in waves as to not put a large amount of stress on the server at a single time
+		timer.Create(ply:EntIndex().."_wake", delay, 1, function()
+			ply:setActive( true )
+		end)
+	end
+end)
+
+--// StartCommand hook that serves as the backbone to run the bots
+hook.Add("StartCommand", "tttBots", function( ply, cmd )
+	if ply:IsBot() and IsValid( ply ) then
+		ply.cmd = cmd
+		
+		if ply:Alive() then
+			if GetRoundState() == ROUND_ACTIVE and ply:getActive() then
+				ply:lerpAngles()
+				ply:followPath()
+				
+				--// INNOCENT BOT LOGIC
+				if ply:GetRole() == ROLE_INNOCENT then
+					if IsValid( ply:getTarget() ) then
+						ply:huntTarget()
+					else
+						if not ply:hasGuns() then
+							ply:findWeapon() 
+							ply:selectCrowbar()
+						end
+						ply:wander() -- WARNING: Resource intensive
+					end
+				end
+				
+				--// DETECTIVE BOT LOGIC
+				if ply:GetRole() == ROLE_DETECTIVE then
+					local vsrc = ply:GetShootPos()
+					local vang = ply:GetAimVector()
+					local vvel = ply:GetVelocity()
+      
+					local vthrow = vvel + vang * 200
+	  
+					-- Drop a health station to help out the innocents
+					local health = ents.Create("ttt_health_station")
+					if IsValid(health) then
+						health:SetPos(vsrc + vang * 10)
+						health:Spawn()
+
+						health:SetPlacer(ply)
+
+						health:PhysWake()
+						local phys = health:GetPhysicsObject()
+						if IsValid(phys) then
+							phys:SetVelocity(vthrow)
+						end
+					end
+					
+					-- Remove a credit because of the health station and kill the bot
+					ply:AddCredits( -1 )
+					ply:Kill()
+					ply:AddFrags( -1 )
+					
+					-- ID their body
+					ply:SetNWBool("body_found", true)
+					local dti = CORPSE.dti
+					ply.server_ragdoll:SetDTBool(dti.BOOL_FOUND, true)
+				end
+				
+				--// TRAITOR BOT LOGIC
+				if ply:GetRole() == ROLE_TRAITOR then
+					ply.tttBot_endGunSearchTime = ply.tttBot_endGunSearchTime or 0
+					
+					-- Set a period of time that the bot will search for weapons before trying to kill players
+					if ply.tttBot_endGunSearchTime == -1 then
+						ply.tttBot_endGunSearchTime = CurTime() + math.random(15, 45)
+					end
+					
+					-- Its time! Or we were attacked
+					if CurTime() > ply.tttBot_endGunSearchTime or IsValid( ply:getTarget() ) then
+						-- Get a target and hunt them down
+						if not IsValid( ply:getTarget() ) then
+							ply:debug("New target - StartCommand")
+							ply:setTarget( ply:findNewTarget( true ) )
+						end
+
+						ply:huntTarget()
+					else
+						-- Search for weapons
+						if not self:hasGuns() then
+							ply:findWeapon()
+						end
+						
+						ply:wander() -- WARNING: Resource intensive
+					end
+				end
+			else
+				-- The round hasn't started
+				ply:setTarget( nil )
+				ply:idle()
+			end
+		else
+			-- Don't do anything we're dead
+			ply:idle()
 		end
 	end
 end)
 
+--// EntityTakeDamage hook so bots can fight back
+hook.Add("EntityTakeDamage", "tttBots", function( ply, dmginfo )
+	if ply.IsBot and ply:IsBot() then
+		if not IsValid( ply:getTarget() ) then
+			if !dmginfo:IsDamageType( DMG_BURN ) and !dmginfo:IsDamageType( DMG_BLAST ) then
+				local target = dmginfo:GetAttacker()
+				
+				local ang = ply:EyeAngles()
+				local tPos = target:GetPos() 
+				local pos = ply:GetPos()
+				local dist = pos:Distance( tPos )
+				
+				yaw = math.deg(math.atan2(tPos.y - pos.y, tPos.x - pos.x))
+				pitch = math.deg(math.atan2( -(tPos.z - pos.z), dist))
+				
+				local sign = math.random(2) and 1 or -1
+				
+				ply:setNewPos( nil )
+				
+				-- Only lock onto the targets that the bot can see 
+				if ply:isVectorVisible( target:GetPos() ) then
+					ply:setTarget( dmginfo:GetAttacker() )
+					
+					ply:setNewAngles( Angle( ang.p + math.random(-10, 10), yaw, 0 ) )
+				else
+					-- Look around randomly in an attempt to find who shot us
+					ply:setNewAngles( Angle( ang.p + math.random(-75, 75), yaw + (math.random(50, 150)*sign), 0 ) )
+				end
+			end
+		end
+	end
+end)
+
+--// TTTKarmaLow hook to make sure a bot doesn't get kicked for poor karma as that will lead to all the bots getting kicked
 hook.Add("TTTKarmaLow", "tttBots", function( ply )
 	if ply:IsBot() then
 		return false
@@ -89,7 +239,7 @@ end)
 --// Think hook that checks if the last Traitors are bots and slays them to not hold up the round
 local nextWinCheck = 0
 hook.Add("Think", "tttBotsWin", function()
-	if CurTime() > nextWinCheck then
+	if CurTime() > nextWinCheck and GetRoundState() == ROUND_ACTIVE then
 		local aliveBots = 0
 		local aliveHumans = 0
 		for _, v in pairs( GetTraitors() ) do
@@ -188,131 +338,6 @@ hook.Add("Think", "tttBotsWeapons", function()
 		tttBot.weapons = weps
 		
 		nextWeaponUpdate = CurTime() + 5
-	end
-end)
-
---// StartCommand hook that serves as the backbone to run the bots
-hook.Add("StartCommand", "tttBots", function( ply, cmd )
-	if ply:IsBot() and IsValid( ply ) then
-		ply.cmd = cmd
-		
-		if ply:Alive() then
-			ply:lerpAngles()
-			
-			if GetRoundState() == ROUND_ACTIVE then
-				ply:followPath()
-				
-				--// INNOCENT BOT LOGIC
-				if ply:GetRole() == ROLE_INNOCENT then
-					if IsValid( ply:getTarget() ) then
-						ply:huntTarget()
-					else
-						if not ply:hasGuns() then
-							ply:findWeapon() 
-							ply:selectCrowbar()
-						end
-						ply:wander() -- WARNING: Resource intensive
-					end
-				end
-				
-				--// DETECTIVE BOT LOGIC
-				if ply:GetRole() == ROLE_DETECTIVE then
-					local vsrc = ply:GetShootPos()
-					local vang = ply:GetAimVector()
-					local vvel = ply:GetVelocity()
-      
-					local vthrow = vvel + vang * 200
-	  
-					-- Drop a health station to help out the innocents
-					local health = ents.Create("ttt_health_station")
-					if IsValid(health) then
-						health:SetPos(vsrc + vang * 10)
-						health:Spawn()
-
-						health:SetPlacer(ply)
-
-						health:PhysWake()
-						local phys = health:GetPhysicsObject()
-						if IsValid(phys) then
-							phys:SetVelocity(vthrow)
-						end
-					end
-					
-					-- Remove a credit because of the health station and kill the bot
-					ply:AddCredits( -1 )
-					ply:Kill()
-					ply:AddFrags( -1 )
-					
-					-- ID their body
-					ply:SetNWBool("body_found", true)
-					local dti = CORPSE.dti
-					ply.server_ragdoll:SetDTBool(dti.BOOL_FOUND, true)
-				end
-				
-				--// TRAITOR BOT LOGIC
-				if ply:GetRole() == ROLE_TRAITOR then
-					ply.tttBot_endGunSearchTime = ply.tttBot_endGunSearchTime or 0
-					
-					-- Set a period of time that the bot will search for weapons before trying to kill players
-					if ply.tttBot_endGunSearchTime == -1 then
-						ply.tttBot_endGunSearchTime = CurTime() + math.random(15, 45)
-					end
-					
-					-- Its time! Or we were attacked
-					if CurTime() > ply.tttBot_endGunSearchTime or IsValid( ply:getTarget() ) then
-						-- Get a target and hunt them down
-						if not IsValid( ply:getTarget() ) or not ply:getTarget():Alive() then
-							print("New target - StartCommand")
-							ply:setTarget( ply:findNewTarget( true ) )
-						end
-
-						ply:huntTarget()
-					else
-						-- Search for weapons
-						ply:findWeapon()
-						ply:wander()
-					end
-				end
-			else
-				-- The round hasn't started
-				ply:setTarget( nil )
-				ply:idle()
-			end
-		else
-			-- Don't do anything we're dead
-			ply:idle()
-		end
-	end
-end)
-
---// EntityTakeDamage hook so bots can fight back
-hook.Add("EntityTakeDamage", "tttBots", function( ply, dmginfo )
-	if ply.IsBot and ply:IsBot() then
-		if not IsValid( ply:getTarget() ) then
-			if !dmginfo:IsDamageType( DMG_BURN ) and !dmginfo:IsDamageType( DMG_BLAST ) then
-				local target = dmginfo:GetAttacker()
-				
-				local ang = ply:EyeAngles()
-				local tPos = target:GetPos() 
-				local pos = ply:GetPos()
-				local dist = pos:Distance( tPos )
-				
-				yaw = math.deg(math.atan2(tPos.y - pos.y, tPos.x - pos.x))
-				pitch = math.deg(math.atan2( -(tPos.z - pos.z), dist))
-				
-				local sign = math.random(2) and 1 or -1
-				
-				-- Only lock onto the targets that the bot can see 
-				if ply:isVectorVisible( target:GetPos() ) then
-					ply:setTarget( dmginfo:GetAttacker() )
-					
-					ply:setNewAngles( Angle( ang.p + math.random(-10, 10), yaw, 0 ) )
-				else
-					-- Look around randomly in an attempt to find who shot us
-					ply:setNewAngles( Angle( ang.p + math.random(-50, 50), yaw + (math.random(50, 150)*sign), 0 ) )
-				end
-			end
-		end
 	end
 end)
 
