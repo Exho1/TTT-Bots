@@ -14,6 +14,6 @@ Archive - https://code.google.com/archive/p/spacetechmodules/
 ## Installation:
 THIS ADDON ONLY WORKS ON WINDOWS!! Until somebody ports the module to other OSes
 
-1. Drag gmsv_navigation_win32.dll to "Program Files (x86)\Steam\steamapps\common\GarrysMod\garrysmod\lua\bin". NOT THE ADDONS FOLDER.
+1. Drag gmsv_navigation_win32.dll to "\garrysmod\lua\bin". NOT THE ADDONS FOLDER!
 2. Put this repo's contents, the Lua stuff, inside the addons folder
 3. Start up a multiplayer TTT match
