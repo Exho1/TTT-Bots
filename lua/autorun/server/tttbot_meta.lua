@@ -36,7 +36,7 @@ function plymeta:generateNav( callback )
 	local landmark = table.Random( tttBot.landmarks )
 	local pos
 	if IsValid( landmark ) then
-		pos = table.Random( tttBot.landmarks ):GetPos()
+		pos = landmark:GetPos()
 	else
 		pos = table.Random( player.GetAll() ):GetPos()
 	end
@@ -374,7 +374,7 @@ function plymeta:huntTarget()
 		-- Is there a clear line between us and the target?
 		-- Is the target in our cone of view?
 		local clearLOS = self:clearLOS( self:getTarget() )
-		local vectorVisible = true
+		local vectorVisible = self:isVectorVisible( tPos )
 		
 		-- The target is within our cone of vision and we can see them
 		if vectorVisible and clearLOS then
@@ -598,13 +598,15 @@ function plymeta:findWeapon()
 	local closestDist = 100000
 	local closestKey = 0
 	for k, wep in pairs( tttBot.weapons ) do
-		local dist = self:GetPos():Distance( wep:GetPos() )
-		
-		if dist < closestDist then
-			--if self:GetEyeTrace().Entity == wep then
-				closestDist = dist
-				closestKey = k
-			--end
+		if IsValid( wep ) then
+			local dist = self:GetPos():Distance( wep:GetPos() )
+			
+			if dist < closestDist then
+				--if self:GetEyeTrace().Entity == wep then
+					closestDist = dist
+					closestKey = k
+				--end
+			end
 		end
 	end
 	
