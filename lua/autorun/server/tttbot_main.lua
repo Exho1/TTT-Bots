@@ -39,7 +39,6 @@ hook.Add("TTTPrepareRound", "tttBots", function()
 		local curPlayers = #player.GetHumans()
 		local curBots = #player.GetBots()
 		local botsToHave = tttBot.playerToBotCount[curPlayers] or 0
-		local botsToHave = 5
 		
 		if curBots < botsToHave then
 			-- Create bots
